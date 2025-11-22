@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>4vs4 作戦ボード (ペン機能付き)</title>
+    <style>
+        body {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            background-color: #f0f0f0;
+            font-family: sans-serif;
+            margin: 0;
+            padding: 20px;
+            touch-action: none;
+        }
+        h2 { margin-bottom: 10px; color: #333; }
+        #canvas-container {
+            position: relative;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+            border: 4px solid #333;
+            border-radius: 4px;
+            background-color: #ffffff;
+            cursor: default;
+        }
+        .controls {
+            margin-top: 15px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            justify-content: center;
+            max-width: 640px;
+        }
+        .btn-group {
+            display: flex;
+            gap: 5px;
+            background: #ddd;
+            padding: 5px;
+            border-radius: 8px;
+        }
+        button {
+            padding: 8px 16px;
+            font-size: 14px;
+            cursor: pointer;
+            background-color: #333;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            font-weight: bold;
+        }
+        button:hover { opacity: 0.8; }
+        
+        /* モード選択時のスタイル */
+        button.active {
+            background-color: #e67e22; /* 選択中はオレンジ */
+            box-shadow: inset 0 2px 5px rgba(0,0,0,0.3);
+        }
+        
+        /* 色ボタン */
+        .color-btn { width: 30px; height: 30px; padding: 0; border: 2px solid white; }
+        .color-btn.black { background-color: #333; }
+        .color-btn.red { background-color: #e74c3c; }
+        .color-btn.blue { background-color: #3498db; }
+        .color-btn.active-color { border: 3px solid #e67e22; transform: scale(1.1); }
+
+    </style>
+</head>
+<body>
+
+    <h2>作戦ボード (移動 & ペン)</h2>
+    <div id="canvas-container">
+        <canvas id="tacticBoard" width="640" height="720"></canvas>
+    </div>
+
+    <div class="controls">
+        <div class="btn-group">
+            <button id="modeMove" class="active" onclick="setMode('move')">🤚 移動</button>
+            <button id="modePen" onclick="setMode('pen')">✏️ ペン</button>
+        </div>
+
+        <div class="btn-group" id="penColors" style="display:none;">
+            <button class="color-btn black active-color" onclick="setPenColor('#333', this)"></button>
+            <button class="color-btn red" onclick="setPenColor('#e74c3c', this)"></button>
+            <button class="color-btn blue" onclick="setPenColor('#3498db', this)"></button>
+        </div>
+
+        <div class="btn-group">
+            <button onclick="clearLines()">線を消す</button>
+            <button onclick="resetBoard('spread')">リセット(展開)</button>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('tacticBoard');
+        const ctx = canvas.getContext('2d');
+
+        // --- 設定 ---
+        const cW = canvas.width;
+        const cH = canvas.height;
+        const paddingX = 40; 
+        const paddingY = 40; 
+        const courtX = paddingX;
+        const courtY = paddingY;
+        const courtW = cW - (paddingX * 2);
+        const courtH = cH - (paddingY * 2);
+        const centerX = cW / 2;
+        const baselineY = courtY; 
+        const hoopY = baselineY + 50; 
+
+        // --- 状態管理 ---
+        let items = [];
+        const radius = 20;
+        
+        let mode = 'move'; // 'move' or 'pen'
+        let drawnPaths = []; // 描かれた線の配列
+        let currentPath = []; // 現在描いている線
+        let currentPenColor = '#333';
+
+        // 初期配置
+        function initItems(pattern) {
+            if (pattern === 'stack') {
+                items = [
+                    { x: centerX - 50, y: baselineY + 140, color: '#e74c3c', label: '1', type: 'player' },
+                    { x: centerX + 50, y: baselineY + 140, color: '#e74c3c', label: '2', type: 'player' },
+                    { x: centerX - 90, y: baselineY + 180, color: '#e74c3c', label: '3', type: 'player' },
+                    { x: centerX + 90, y: baselineY + 180, color: '#e74c3c', label: '4', type: 'player' },
+                    { x: centerX - 50, y: baselineY + 100, color: '#3498db', label: '1', type: 'player' },
+                    { x: centerX + 50, y: baselineY + 100, color: '#3498db', label: '2', type: 'player' },
+                    { x: centerX - 90, y: baselineY + 120, color: '#3498db', label: '3', type: 'player' },
+                    { x: centerX + 90, y: baselineY + 120, color: '#3498db', label: '4', type: 'player' },
+                    { x: centerX, y: baselineY + 220, color: '#e67e22', label: '', type: 'ball' }
+                ];
+            } else {
+                items = [
+                    { x: centerX, y: 550, color: '#e74c3c', label: '1', type: 'player' }, 
+                    { x: courtX + 30, y: 250, color: '#e74c3c', label: '2', type: 'player' }, 
+                    { x: courtX + courtW - 30, y: 250, color: '#e74c3c', label: '3', type: 'player' }, 
+                    { x: centerX - 100, y: 200, color: '#e74c3c', label: '4', type: 'player' },
+                    { x: centerX, y: 380, color: '#3498db', label: '1', type: 'player' },
+                    { x: courtX + 100, y: 250, color: '#3498db', label: '2', type: 'player' },
+                    { x: courtX + courtW - 100, y: 250, color: '#3498db', label: '3', type: 'player' },
+                    { x: centerX - 80, y: 150, color: '#3498db', label: '4', type: 'player' },
+                    { x: centerX + 30, y: 550, color: '#e67e22', label: '', type: 'ball' }
+                ];
+            }
+        }
+
+        // --- 描画関数 ---
+
+        function drawCourt() {
+            ctx.clearRect(0, 0, cW, cH);
+            ctx.fillStyle = "#ffffff";
+            ctx.fillRect(0, 0, cW, cH);
+            ctx.strokeStyle = "#444444";
+            ctx.lineWidth = 4;
+            ctx.lineCap = "round";
+
+            // 1. ペイントエリア (短め維持)
+            const keyWidth = 200;
+            const keyHeight = 190;
+            const keyX = centerX - (keyWidth / 2);
+            ctx.strokeRect(keyX, baselineY, keyWidth, keyHeight);
+
+            // 2. フリースローサークル
+            const freeThrowY = baselineY + keyHeight;
+            ctx.beginPath();
+            ctx.arc(centerX, freeThrowY, keyWidth / 2, 0, Math.PI); 
+            ctx.stroke();
+
+            // 3. 3ポイントライン
+            const r3 = 310;
+            const cornerDistX = 250;
+            const angle = Math.acos(cornerDistX / r3);
+            ctx.beginPath();
+            ctx.moveTo(centerX - cornerDistX, baselineY);
+            ctx.lineTo(centerX - cornerDistX, hoopY + Math.sin(angle) * r3 * 0.2); 
+            ctx.arc(centerX, hoopY, r3, Math.PI - angle, angle, true); 
+            ctx.lineTo(centerX + cornerDistX, baselineY);
+            ctx.stroke();
+
+            // 4. ノーチャージエリア
+            ctx.beginPath();
+            ctx.arc(centerX, hoopY, 50, 0, Math.PI);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(centerX - 20, hoopY - 10); 
+            ctx.lineTo(centerX + 20, hoopY - 10);
+            ctx.stroke();
+
+            // 5. ハッシュマーク
+            const marks = [40, 70, 100, 130];
+            ctx.lineWidth = 5;
+            marks.forEach((d, index) => {
+                let w = (index === 1) ? 15 : 10;
+                ctx.beginPath();
+                ctx.moveTo(keyX - w, baselineY + d);
+                ctx.lineTo(keyX, baselineY + d);
+                ctx.stroke();
+                ctx.beginPath();
+                ctx.moveTo(keyX + keyWidth, baselineY + d);
+                ctx.lineTo(keyX + keyWidth + w, baselineY + d);
+                ctx.stroke();
+            });
+            ctx.lineWidth = 4;
+
+            // 6. コート外枠
+            ctx.strokeRect(courtX, courtY, courtW, courtH);
+            
+            // 7. ゴール
+            ctx.beginPath();
+            ctx.moveTo(centerX - 40, baselineY + 20);
+            ctx.lineTo(centerX + 40, baselineY + 20);
+            ctx.lineWidth = 6;
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.arc(centerX, hoopY, 12, 0, Math.PI * 2);
+            ctx.fillStyle = "white";
+            ctx.fill();
+            ctx.lineWidth = 3;
+            ctx.stroke();
+        }
+
+        // ペンの線を描画
+        function drawPaths() {
+            // 確定した線
+            drawnPaths.forEach(pathObj => {
+                if (pathObj.points.length < 2) return;
+                ctx.beginPath();
+                ctx.strokeStyle = pathObj.color;
+                ctx.lineWidth = 3;
+                ctx.lineCap = "round";
+                ctx.lineJoin = "round";
+                ctx.moveTo(pathObj.points[0].x, pathObj.points[0].y);
+                for (let i = 1; i < pathObj.points.length; i++) {
+                    ctx.lineTo(pathObj.points[i].x, pathObj.points[i].y);
+                }
+                ctx.stroke();
+            });
+
+            // 現在描いている線
+            if (currentPath.length > 1) {
+                ctx.beginPath();
+                ctx.strokeStyle = currentPenColor;
+                ctx.lineWidth = 3;
+                ctx.lineCap = "round";
+                ctx.moveTo(currentPath[0].x, currentPath[0].y);
+                for (let i = 1; i < currentPath.length; i++) {
+                    ctx.lineTo(currentPath[i].x, currentPath[i].y);
+                }
+                ctx.stroke();
+            }
+        }
+
+        function drawItems() {
+            items.forEach(item => {
+                ctx.beginPath();
+                ctx.arc(item.x, item.y, item.type === 'ball' ? 14 : radius, 0, Math.PI * 2);
+                ctx.fillStyle = item.color;
+                ctx.shadowColor = 'rgba(0,0,0,0.2)';
+                ctx.shadowBlur = 4;
+                ctx.shadowOffsetY = 2;
+                ctx.fill();
+                ctx.shadowColor = 'transparent'; 
+                if (item.label) {
+                    ctx.fillStyle = "white";
+                    ctx.font = "bold 18px Arial";
+                    ctx.textAlign = "center";
+                    ctx.textBaseline = "middle";
+                    ctx.fillText(item.label, item.x, item.y);
+                }
+                ctx.strokeStyle = "#333";
+                ctx.lineWidth = 1;
+                ctx.stroke();
+            });
+        }
+
+        function update() {
+            drawCourt(); // コート
+            drawPaths(); // 線 (選手の下に描く)
+            drawItems(); // 選手
+        }
+
+        // --- 操作系 ---
+        
+        // モード切替
+        function setMode(newMode) {
+            mode = newMode;
+            document.getElementById('modeMove').classList.toggle('active', mode === 'move');
+            document.getElementById('modePen').classList.toggle('active', mode === 'pen');
+            document.getElementById('penColors').style.display = (mode === 'pen') ? 'flex' : 'none';
+            document.getElementById('canvas-container').style.cursor = (mode === 'pen') ? 'crosshair' : 'default';
+        }
+
+        // ペン色変更
+        function setPenColor(color, btn) {
+            currentPenColor = color;
+            document.querySelectorAll('.color-btn').forEach(b => b.classList.remove('active-color'));
+            btn.classList.add('active-color');
+        }
+
+        function clearLines() {
+            drawnPaths = [];
+            update();
+        }
+
+        // イベント処理
+        let isDragging = false;
+        let dragIndex = -1;
+
+        function getMousePos(evt) {
+            const rect = canvas.getBoundingClientRect();
+            const clientX = evt.clientX || evt.touches[0].clientX;
+            const clientY = evt.clientY || evt.touches[0].clientY;
+            return { x: clientX - rect.left, y: clientY - rect.top };
+        }
+
+        function onDown(evt) {
+            const pos = getMousePos(evt);
+
+            if (mode === 'move') {
+                // 移動モード
+                for (let i = items.length - 1; i >= 0; i--) {
+                    const item = items[i];
+                    const r = item.type === 'ball' ? 20 : radius + 5; 
+                    const dx = pos.x - item.x;
+                    const dy = pos.y - item.y;
+                    if (dx * dx + dy * dy < r * r) {
+                        dragIndex = i;
+                        isDragging = true;
+                        break;
+                    }
+                }
+            } else {
+                // ペンモード
+                isDragging = true; // 描画フラグとして利用
+                currentPath = [{x: pos.x, y: pos.y}];
+            }
+        }
+
+        function onMove(evt) {
+            if (!isDragging) return;
+            const pos = getMousePos(evt);
+            evt.preventDefault();
+
+            if (mode === 'move' && dragIndex !== -1) {
+                items[dragIndex].x = pos.x;
+                items[dragIndex].y = pos.y;
+                update();
+            } else if (mode === 'pen') {
+                currentPath.push({x: pos.x, y: pos.y});
+                update();
+            }
+        }
+
+        function onUp() {
+            if (mode === 'pen' && isDragging) {
+                // 書き終わった線を保存
+                drawnPaths.push({
+                    color: currentPenColor,
+                    points: currentPath
+                });
+                currentPath = [];
+            }
+            isDragging = false;
+            dragIndex = -1;
+            update();
+        }
+
+        canvas.addEventListener('mousedown', onDown);
+        canvas.addEventListener('mousemove', onMove);
+        canvas.addEventListener('mouseup', onUp);
+        canvas.addEventListener('touchstart', onDown, {passive: false});
+        canvas.addEventListener('touchmove', onMove, {passive: false});
+        canvas.addEventListener('touchend', onUp);
+
+        function resetBoard(pattern) {
+            // 線も消すかどうかは選択ですが、今回は配置リセット時は線も消します
+            // clearLines(); 
+            initItems(pattern);
+            update();
+        }
+
+        initItems('spread'); 
+        update();
+    </script>
+</body>
+</html>
