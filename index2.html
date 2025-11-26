@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>4vs4 作戦ボード (録画機能付き)</title>
+    <style>
+        body {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            background-color: #f0f0f0;
+            font-family: sans-serif;
+            margin: 0;
+            padding: 20px;
+            touch-action: none;
+        }
+        h2 { margin-bottom: 10px; color: #333; }
+        #canvas-container {
+            position: relative;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+            border: 4px solid #333;
+            border-radius: 4px;
+            background-color: #ffffff;
+            cursor: default;
+            transition: border-color 0.3s;
+        }
+        
+        .recording-mode {
+            animation: pulse-border 1.5s infinite;
+        }
+        @keyframes pulse-border {
+            0% { border-color: #e74c3c; box-shadow: 0 0 10px #e74c3c; }
+            50% { border-color: #c0392b; box-shadow: 0 0 20px #e74c3c; }
+            100% { border-color: #e74c3c; box-shadow: 0 0 10px #e74c3c; }
+        }
+
+        .controls {
+            margin-top: 15px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            justify-content: center;
+            max-width: 640px;
+        }
+        .btn-group {
+            display: flex;
+            gap: 5px;
+            background: #ddd;
+            padding: 5px;
+            border-radius: 8px;
+            align-items: center;
+        }
+        button {
+            padding: 8px 12px;
+            font-size: 14px;
+            cursor: pointer;
+            background-color: #333;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            font-weight: bold;
+            white-space: nowrap;
+        }
+        button:disabled { background-color: #aaa; cursor: not-allowed; }
+        button:hover:not(:disabled) { opacity: 0.8; }
+        button.active { background-color: #e67e22; box-shadow: inset 0 2px 5px rgba(0,0,0,0.3); }
+        
+        #btnRecord.recording { background-color: #e74c3c; animation: pulse-text 1s infinite; }
+        @keyframes pulse-text { 0% { opacity: 1; } 50% { opacity: 0.7; } 100% { opacity: 1; } }
+
+        select {
+            padding: 8px;
+            font-size: 14px;
+            border-radius: 5px;
+            border: 1px solid #999;
+            background: white;
+            cursor: pointer;
+        }
+
+        .color-btn { width: 30px; height: 30px; padding: 0; border: 2px solid white; }
+        .color-btn.black { background-color: #333; }
+        .color-btn.red { background-color: #e74c3c; }
+        .color-btn.blue { background-color: #3498db; }
+        .color-btn.active-color { border: 3px solid #e67e22; transform: scale(1.1); }
+        
+        #status-bar { margin-top: 5px; height: 20px; color: #e74c3c; font-weight: bold; font-size: 14px; }
+    </style>
+</head>
+<body>
+
+    <h2>作戦ボード (録画機能付き)</h2>
+    <div id="canvas-container">
+        <canvas id="tacticBoard" width="640" height="720"></canvas>
+    </div>
+    <div id="status-bar"></div>
+
+    <div class="controls">
+        <div class="btn-group">
+            <button id="modeMove" class="active" onclick="setMode('move')">🤚 移動</button>
+            <button id="modePen" onclick="setMode('pen')">✏️ ペン</button>
+            <div id="penColors" style="display:none; margin-left: 5px;">
+                <button class="color-btn black active-color" onclick="setPenColor('#333', this)"></button>
+                <button class="color-btn red" onclick="setPenColor('#e74c3c', this)"></button>
+                <button class="color-btn blue" onclick="setPenColor('#3498db', this)"></button>
+            </div>
+        </div>
+
+        <div class="btn-group">
+            <button id="btnRecord" onclick="toggleRecording()">🔴 録画</button>
+            <button id="btnPlay" onclick="playRecording()" disabled>▶️ 再生</button>
+        </div>
+
+        <div class="btn-group">
+            <button onclick="clearLines()">線クリア</button>
+            <button onclick="resetBoard('spread')">リセット</button>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('tacticBoard');
+        const ctx = canvas.getContext('2d');
+        const container = document.getElementById('canvas-container');
+        const statusBar = document.getElementById('status-bar');
+
+        // --- 設定 ---
+        const cW = canvas.width;
+        const cH = canvas.height;
+        const paddingX = 40; 
+        const paddingY = 40; 
+        const courtX = paddingX;
+        const courtY = paddingY;
+        const courtW = cW - (paddingX * 2);
+        const courtH = cH - (paddingY * 2);
+        const centerX = cW / 2;
+        const baselineY = courtY; 
+        const hoopY = baselineY + 50; 
+
+        // --- 状態管理 ---
+        let items = [];
+        const radius = 20;
+        
+        let mode = 'move'; 
+        let drawnPaths = []; 
+        let currentPath = []; 
+        let currentPenColor = '#333';
+
+        // --- 録画機能用変数 ---
+        let isRecording = false;
+        let isPlaying = false;
+        let recordedFrames = []; 
+        let recordTimer = null;
+        let playTimer = null;
+        const FPS = 30;
+
+        // 初期配置
+        function initItems(pattern) {
+            if (pattern === 'stack') {
+                // スタック配置 (デフォルト)
+                items = [
+                    { x: centerX - 50, y: baselineY + 140, color: '#e74c3c', label: '1', type: 'player' },
+                    { x: centerX + 50, y: baselineY + 140, color: '#e74c3c', label: '2', type: 'player' },
+                    { x: centerX - 90, y: baselineY + 180, color: '#e74c3c', label: '3', type: 'player' },
+                    { x: centerX + 90, y: baselineY + 180, color: '#e74c3c', label: '4', type: 'player' },
+                    { x: centerX - 50, y: baselineY + 100, color: '#3498db', label: '1', type: 'player' },
+                    { x: centerX + 50, y: baselineY + 100, color: '#3498db', label: '2', type: 'player' },
+                    { x: centerX - 90, y: baselineY + 120, color: '#3498db', label: '3', type: 'player' },
+                    { x: centerX + 90, y: baselineY + 120, color: '#3498db', label: '4', type: 'player' },
+                    { x: centerX, y: baselineY + 220, color: '#e67e22', label: '', type: 'ball' }
+                ];
+            } else {
+                // 4アウト配置 (均等配置) - ユーザーの要望により採用
+                items = [
+                    // 赤チーム (攻撃側: 3Pライン上の主要な4箇所を均等に配置)
+                    { x: centerX, y: 400, color: '#e74c3c', label: '1', type: 'player' },       // トップ (中央)
+                    { x: 130, y: 320, color: '#e74c3c', label: '2', type: 'player' },           // 左ウィング 
+                    { x: 510, y: 320, color: '#e74c3c', label: '3', type: 'player' },           // 右ウィング (対称)
+                    { x: 100, y: 250, color: '#e74c3c', label: '4', type: 'player' },           // 左コーナー (ストレートライン付近)
+                    
+                    // 青チーム (守備側: 対応するディフェンス位置)
+                    { x: centerX, y: 350, color: '#3498db', label: '1', type: 'player' },       // 赤1のマーク
+                    { x: 200, y: 250, color: '#3498db', label: '2', type: 'player' },           // 赤2のマーク
+                    { x: 440, y: 250, color: '#3498db', label: '3', type: 'player' },           // 赤3のマーク
+                    { x: centerX, y: 180, color: '#3498db', label: '4', type: 'player' },       // ペイントエリア付近
+                    
+                    // ボール (赤1が所持)
+                    { x: centerX, y: 400, color: '#e67e22', label: '', type: 'ball' }
+                ];
+            }
+        }
+
+        // --- 描画関数 (変更なし) ---
+        function drawCourt() {
+            ctx.clearRect(0, 0, cW, cH);
+            ctx.fillStyle = "#ffffff";
+            ctx.fillRect(0, 0, cW, cH);
+            ctx.strokeStyle = "#444444";
+            ctx.lineWidth = 4;
+            ctx.lineCap = "round";
+
+            const keyWidth = 200;
+            const keyHeight = 190;
+            const keyX = centerX - (keyWidth / 2);
+            ctx.strokeRect(keyX, baselineY, keyWidth, keyHeight);
+            const freeThrowY = baselineY + keyHeight;
+            ctx.beginPath();
+            ctx.arc(centerX, freeThrowY, keyWidth / 2, 0, Math.PI); 
+            ctx.stroke();
+            const r3 = 310;
+            const cornerDistX = 250;
+            const angle = Math.acos(cornerDistX / r3);
+            ctx.beginPath();
+            ctx.moveTo(centerX - cornerDistX, baselineY);
+            ctx.lineTo(centerX - cornerDistX, hoopY + Math.sin(angle) * r3 * 0.2); 
+            ctx.arc(centerX, hoopY, r3, Math.PI - angle, angle, true); 
+            ctx.lineTo(centerX + cornerDistX, baselineY);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.arc(centerX, hoopY, 50, 0, Math.PI);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(centerX - 20, hoopY - 10); 
+            ctx.lineTo(centerX + 20, hoopY - 10);
+            ctx.stroke();
+            const marks = [40, 70, 100, 130];
+            ctx.lineWidth = 5;
+            marks.forEach((d, index) => {
+                let w = (index === 1) ? 15 : 10;
+                ctx.beginPath();
+                ctx.moveTo(keyX - w, baselineY + d);
+                ctx.lineTo(keyX, baselineY + d);
+                ctx.stroke();
+                ctx.beginPath();
+                ctx.moveTo(keyX + keyWidth, baselineY + d);
+                ctx.lineTo(keyX + keyWidth + w, baselineY + d);
+                ctx.stroke();
+            });
+            ctx.lineWidth = 4;
+            ctx.strokeRect(courtX, courtY, courtW, courtH);
+            ctx.beginPath();
+            ctx.moveTo(centerX - 40, baselineY + 20);
+            ctx.lineTo(centerX + 40, baselineY + 20);
+            ctx.lineWidth = 6;
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.arc(centerX, hoopY, 12, 0, Math.PI * 2);
+            ctx.fillStyle = "white";
+            ctx.fill();
+            ctx.lineWidth = 3;
+            ctx.stroke();
+        }
+
+        function drawPaths() {
+            drawnPaths.forEach(pathObj => {
+                if (pathObj.points.length < 2) return;
+                ctx.beginPath();
+                ctx.strokeStyle = pathObj.color;
+                ctx.lineWidth = 3;
+                ctx.lineCap = "round";
+                ctx.lineJoin = "round";
+                ctx.moveTo(pathObj.points[0].x, pathObj.points[0].y);
+                for (let i = 1; i < pathObj.points.length; i++) {
+                    ctx.lineTo(pathObj.points[i].x, pathObj.points[i].y);
+                }
+                ctx.stroke();
+            });
+            if (currentPath.length > 1) {
+                ctx.beginPath();
+                ctx.strokeStyle = currentPenColor;
+                ctx.lineWidth = 3;
+                ctx.lineCap = "round";
+                ctx.moveTo(currentPath[0].x, currentPath[0].y);
+                for (let i = 1; i < currentPath.length; i++) {
+                    ctx.lineTo(currentPath[i].x, currentPath[i].y);
+                }
+                ctx.stroke();
+            }
+        }
+
+        function drawItems() {
+            items.forEach(item => {
+                ctx.beginPath();
+                ctx.arc(item.x, item.y, item.type === 'ball' ? 14 : radius, 0, Math.PI * 2);
+                ctx.fillStyle = item.color;
+                ctx.shadowColor = 'rgba(0,0,0,0.2)';
+                ctx.shadowBlur = 4;
+                ctx.shadowOffsetY = 2;
+                ctx.fill();
+                ctx.shadowColor = 'transparent'; 
+                if (item.label) {
+                    ctx.fillStyle = "white";
+                    ctx.font = "bold 18px Arial";
+                    ctx.textAlign = "center";
+                    ctx.textBaseline = "middle";
+                    ctx.fillText(item.label, item.x, item.y);
+                }
+                ctx.strokeStyle = "#333";
+                ctx.lineWidth = 1;
+                ctx.stroke();
+            });
+        }
+
+        function update() {
+            drawCourt();
+            drawPaths();
+            drawItems();
+        }
+
+        // --- 録画・再生 (変更なし) ---
+        function captureFrame() {
+            recordedFrames.push({
+                items: JSON.parse(JSON.stringify(items)),
+                drawnPaths: JSON.parse(JSON.stringify(drawnPaths)),
+                currentPath: JSON.parse(JSON.stringify(currentPath)),
+                currentPenColor: currentPenColor
+            });
+        }
+
+        function toggleRecording() {
+            if (isPlaying) return;
+            if (!isRecording) {
+                isRecording = true;
+                recordedFrames = []; 
+                document.getElementById('btnRecord').innerHTML = "⏹ 停止";
+                document.getElementById('btnRecord').classList.add('recording');
+                container.classList.add('recording-mode');
+                document.getElementById('btnPlay').disabled = true;
+                statusBar.innerText = "● 録画中... (動かしてください)";
+                captureFrame();
+                recordTimer = setInterval(captureFrame, 1000 / FPS);
+            } else {
+                isRecording = false;
+                clearInterval(recordTimer);
+                document.getElementById('btnRecord').innerHTML = "🔴 録画";
+                document.getElementById('btnRecord').classList.remove('recording');
+                container.classList.remove('recording-mode');
+                document.getElementById('btnPlay').disabled = false;
+                statusBar.innerText = `録画完了: ${(recordedFrames.length / FPS).toFixed(1)}秒`;
+            }
+        }
+
+        function playRecording() {
+            if (isRecording || recordedFrames.length === 0) return;
+            isPlaying = true;
+            let frameIndex = 0;
+            document.getElementById('btnPlay').disabled = true;
+            document.getElementById('btnRecord').disabled = true;
+            statusBar.innerText = "▶ 再生中...";
+
+            playTimer = setInterval(() => {
+                if (frameIndex >= recordedFrames.length) {
+                    stopPlaying();
+                    return;
+                }
+                const frame = recordedFrames[frameIndex];
+                items = frame.items;
+                drawnPaths = frame.drawnPaths;
+                currentPath = frame.currentPath;
+                currentPenColor = frame.currentPenColor;
+                update();
+                frameIndex++;
+            }, 1000 / FPS);
+        }
+
+        function stopPlaying() {
+            clearInterval(playTimer);
+            isPlaying = false;
+            document.getElementById('btnPlay').disabled = false;
+            document.getElementById('btnRecord').disabled = false;
+            statusBar.innerText = "再生終了";
+            currentPath = [];
+            update();
+        }
+
+        // --- 操作系 (変更なし) ---
+        function setMode(newMode) {
+            if (isPlaying) return;
+            mode = newMode;
+            document.getElementById('modeMove').classList.toggle('active', mode === 'move');
+            document.getElementById('modePen').classList.toggle('active', mode === 'pen');
+            document.getElementById('penColors').style.display = (mode === 'pen') ? 'flex' : 'none';
+            document.getElementById('canvas-container').style.cursor = (mode === 'pen') ? 'crosshair' : 'default';
+        }
+
+        function setPenColor(color, btn) {
+            currentPenColor = color;
+            document.querySelectorAll('.color-btn').forEach(b => b.classList.remove('active-color'));
+            btn.classList.add('active-color');
+        }
+
+        function clearLines() {
+            if (isPlaying || isRecording) return;
+            drawnPaths = [];
+            recordedFrames = []; 
+            document.getElementById('btnPlay').disabled = true;
+            statusBar.innerText = "";
+            update();
+        }
+
+        let isDragging = false;
+        let dragIndex = -1;
+
+        function getMousePos(evt) {
+            const rect = canvas.getBoundingClientRect();
+            const clientX = evt.clientX || evt.touches[0].clientX;
+            const clientY = evt.touches[0].clientY;
+            return { x: clientX - rect.left, y: clientY - rect.top };
+        }
+
+        function onDown(evt) {
+            if (isPlaying) return;
+            const pos = getMousePos(evt);
+            if (mode === 'move') {
+                for (let i = items.length - 1; i >= 0; i--) {
+                    const item = items[i];
+                    const r = item.type === 'ball' ? 20 : radius + 5; 
+                    const dx = pos.x - item.x;
+                    const dy = pos.y - item.y;
+                    if (dx * dx + dy * dy < r * r) {
+                        dragIndex = i;
+                        isDragging = true;
+                        break;
+                    }
+                }
+            } else {
+                isDragging = true; 
+                currentPath = [{x: pos.x, y: pos.y}];
+            }
+        }
+
+        function onMove(evt) {
+            if (!isDragging) return;
+            const pos = getMousePos(evt);
+            evt.preventDefault();
+            if (mode === 'move' && dragIndex !== -1) {
+                items[dragIndex].x = pos.x;
+                items[dragIndex].y = pos.y;
+                update();
+            } else if (mode === 'pen') {
+                currentPath.push({x: pos.x, y: pos.y});
+                update();
+            }
+        }
+
+        function onUp() {
+            if (mode === 'pen' && isDragging) {
+                drawnPaths.push({ color: currentPenColor, points: currentPath });
+                currentPath = [];
+            }
+            isDragging = false;
+            dragIndex = -1;
+            update();
+        }
+
+        canvas.addEventListener('mousedown', onDown);
+        canvas.addEventListener('mousemove', onMove);
+        canvas.addEventListener('mouseup', onUp);
+        canvas.addEventListener('touchstart', onDown, {passive: false});
+        canvas.addEventListener('touchmove', onMove, {passive: false});
+        canvas.addEventListener('touchend', onUp);
+
+        function resetBoard(pattern) {
+            if (isRecording || isPlaying) return;
+            recordedFrames = [];
+            drawnPaths = [];
+            document.getElementById('btnPlay').disabled = true;
+            statusBar.innerText = "";
+            initItems(pattern);
+            update();
+        }
+
+        initItems('spread'); 
+        update();
+    </script>
+</body>
+</html>
